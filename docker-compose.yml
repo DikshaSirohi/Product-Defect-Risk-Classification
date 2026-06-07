@@ -1,24 +1,11 @@
 version: '3.8'
 
 services:
-  backend:
+  streamlit:
     build:
       context: .
       dockerfile: Dockerfile
-    image: defect-risk-backend:latest
-    ports:
-      - "8000:8000"
-    volumes:
-      - .:/app
-    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
-    environment:
-      - PYTHONUNBUFFERED=1
-
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: defect-risk-frontend:latest
+    image: defect-risk-streamlit:latest
     ports:
       - "8501:8501"
     volumes:
@@ -26,5 +13,4 @@ services:
     command: streamlit run frontend/app.py --server.port 8501 --server.address 0.0.0.0
     environment:
       - PYTHONUNBUFFERED=1
-    depends_on:
-      - backend
+

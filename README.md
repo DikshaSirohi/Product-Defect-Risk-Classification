@@ -1,6 +1,6 @@
 # AI-Based Product Defect Risk Classification System
 
-An end-to-end Machine Learning web application designed for demo purposes to predict and explain product defect risks (Low, Medium, High) in a 10-step manufacturing assembly line. Built with a **FastAPI backend**, a **scikit-learn HistGradientBoosting model** with **SHAP TreeExplainer local drivers**, and a custom **Streamlit interactive UI** incorporating dynamic process flow charts.
+An end-to-end Machine Learning web application designed for demo purposes to predict and explain product defect risks (Low, Medium, High) in a 10-step manufacturing assembly line. Built with a **scikit-learn HistGradientBoosting model** with **SHAP TreeExplainer local drivers**, and a custom **Streamlit interactive UI** incorporating dynamic process flow charts, fully self-contained as a single application.
 
 ---
 
@@ -9,9 +9,7 @@ An end-to-end Machine Learning web application designed for demo purposes to pre
 ```text
 defect_risk_app/
   backend/
-    main.py                 # FastAPI core router and server routes
     config.py               # Paths, exclusions, and ML default constants
-    schemas.py              # Pydantic payloads for predict/train
     train.py                # Command-line model retraining script
     services/
       data_service.py       # Data cleansing, duplicate dropping, imputation
@@ -25,9 +23,9 @@ defect_risk_app/
   scripts/
     generate_sample_data.py # Data generation script implementing process rules
   tests/
-    test_backend_smoke.py   # Automated REST endpoint smoke test suite
+    test_pipeline.py        # Automated in-memory pipeline tests
   requirements.txt          # Python package requirements
-  docker-compose.yml        # Multi-container local orchestration
+  docker-compose.yml        # Streamlit container local orchestration
 ```
 
 ---
@@ -54,21 +52,15 @@ python -m pip install -r requirements.txt
 
 ---
 
-## ⚡ Running the Applications
+## ⚡ Running the Application
 
-### 1. Launch FastAPI Backend
-The backend has an automated startup lifecycle. If no model is found in `artifacts/`, it automatically trains one from the default dataset at startup.
-```bash
-uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
-```
-*API documentation will be live at: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)*
-
-### 2. Launch Streamlit Frontend
-Open a new terminal tab, activate the virtual environment, and run:
+### Launch Streamlit Frontend
+Activate the virtual environment, and run:
 ```bash
 streamlit run frontend/app.py
 ```
 *The Control Center dashboard will load automatically at: [http://localhost:8501](http://localhost:8501)*
+On startup, it will automatically load the model (and retrain it if it doesn't find one).
 
 ---
 
@@ -81,18 +73,17 @@ python -m backend.train data/sample_defects.csv --target defect_risk
 ---
 
 ## 🧪 Automated Verification & Smoke Tests
-Ensure the backend server is running on port 8000, then execute:
+To run automated in-memory pipeline tests:
 ```bash
-python tests/test_backend_smoke.py
+python tests/test_pipeline.py
 ```
-*You should see all health, metadata, predictions, and SHAP tests output with standard checkmarks!*
 
 ---
 
 ## 🐳 Docker Deployment
-To launch the entire backend and Streamlit frontend in a unified local container network:
+To launch the Streamlit container locally:
 ```bash
 docker-compose up --build
 ```
 * Streamlit: `http://localhost:8501`
-* FastAPI: `http://localhost:8000`
+

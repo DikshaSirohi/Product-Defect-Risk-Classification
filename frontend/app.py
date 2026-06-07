@@ -1,10 +1,18 @@
 import streamlit as st
 import pandas as pd
-import requests
 import json
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
+import sys
+
+# Ensure root directory is in python path
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if base_dir not in sys.path:
+    sys.path.append(base_dir)
+
+from backend.services.model_service import ModelService
+from backend.config import SAMPLE_DATA_PATH, DEFAULT_TARGET_COL
 
 # Set Premium Page Configurations
 st.set_page_config(
@@ -147,7 +155,28 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- SIDEBAR: API Config & Connection Status -----------------
+# ----------------- Initialize Model Service -----------------
+if "model_service" not in st.session_state:
+    with st.spinner("Initializing Model Service and loading model..."):
+        service = ModelService()
+        loaded = service.load_model()
+        if not loaded:
+            # Try to auto-train if model is not loaded
+            if os.path.exists(SAMPLE_DATA_PATH):
+                try:
+                    df = pd.read_csv(SAMPLE_DATA_PATH)
+                    service.train_pipeline(df, DEFAULT_TARGET_COL)
+                except Exception as e:
+                    st.sidebar.error(f"Failed to auto-train model: {e}")
+            else:
+                st.sidebar.error(f"Sample data missing at {SAMPLE_DATA_PATH}")
+        st.session_state.model_service = service
+
+model_service = st.session_state.model_service
+connection_ok = True
+model_loaded = model_service.is_model_loaded()
+
+# ----------------- SIDEBAR: Control Settings & Connection Status -----------------
 logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logo.jpg")
 if os.path.exists(logo_path):
     st.sidebar.image(logo_path, width=70)
@@ -158,31 +187,12 @@ else:
     else:
         st.sidebar.image("https://img.icons8.com/color/96/automation-precision.png", width=70)
 st.sidebar.markdown("### Control Settings")
-api_base_url = st.sidebar.text_input("FastAPI Service URL", value="http://127.0.0.1:8000")
-
-# Check Health status
-health_url = f"{api_base_url}/health"
-connection_ok = False
-model_loaded = False
-
-try:
-    response = requests.get(health_url, timeout=2.0)
-    if response.status_code == 200:
-        health_data = response.json()
-        if health_data.get("status") == "ok":
-            connection_ok = True
-            model_loaded = health_data.get("model_loaded", False)
-except Exception:
-    pass
 
 # Display Connection light
-if connection_ok:
-    if model_loaded:
-        st.sidebar.success("🟢 Connected | Model Loaded")
-    else:
-        st.sidebar.warning("🟡 Connected | Model Missing")
+if model_loaded:
+    st.sidebar.success("🟢 Active | Model Loaded")
 else:
-    st.sidebar.error("🔴 Service Offline | Run FastAPI")
+    st.sidebar.error("🔴 Active | Model Missing")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown(
@@ -224,7 +234,7 @@ with tabs[0]:
     # Render Model Metrics Cards
     if connection_ok and model_loaded:
         try:
-            metrics = requests.get(f"{api_base_url}/metrics").json()
+            metrics = model_service.get_metadata().get("metrics", {})
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.markdown(f"<div class='metric-card'><div class='metric-value'>{metrics.get('accuracy', 0.0)*100:.2f}%</div><div class='metric-label'>Accuracy</div></div>", unsafe_allow_html=True)
@@ -237,7 +247,7 @@ with tabs[0]:
         except Exception:
             st.info("Failed to pull real-time model metrics.")
     else:
-        st.warning("Please train a model or ensure the FastAPI backend is running locally to view status.")
+        st.warning("Please train a model to view status.")
 
     st.markdown("---")
     
@@ -346,13 +356,21 @@ with tabs[0]:
         if connection_ok:
             try:
                 # Load sample data
-                sample_data = requests.get(f"{api_base_url}/sample-data?limit=15").json()
-                df_sample = pd.DataFrame(sample_data)
-                st.dataframe(df_sample, height=450)
-                
-                # Download link
-                csv_url = f"{api_base_url}/sample-data.csv?limit=500"
-                st.markdown(f'<a href="{csv_url}" target="_blank"><button style="background-color:#1e3c72;color:white;border:none;padding:10px 20px;border-radius:5px;cursor:pointer;">📥 Download 500 Sample Rows (CSV)</button></a>', unsafe_allow_html=True)
+                if os.path.exists(SAMPLE_DATA_PATH):
+                    df_sample_full = pd.read_csv(SAMPLE_DATA_PATH)
+                    df_sample = df_sample_full.head(15)
+                    st.dataframe(df_sample, height=450)
+                    
+                    # Native Streamlit Download Button
+                    csv_content = df_sample_full.head(500).to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download 500 Sample Rows (CSV)",
+                        data=csv_content,
+                        file_name="sample_defects_500.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.error("Sample dataset file not found.")
             except Exception as e:
                 st.error(f"Error loading sample data: {e}")
         else:
@@ -375,7 +393,7 @@ with tabs[1]:
     if connection_ok and model_loaded:
         try:
             # Dynamically fetch training metadata for default pre-fills
-            metadata = requests.get(f"{api_base_url}/metadata").json()
+            metadata = model_service.get_metadata()
             features = metadata.get("features", [])
             numeric_features = metadata.get("numeric_features", [])
             categorical_features = metadata.get("categorical_features", [])
@@ -483,12 +501,8 @@ with tabs[1]:
             
             # Predict Trigger
             if submitted:
-                # POST predict request
-                pred_url = f"{api_base_url}/predict"
-                payload = {"record": form_inputs}
-                
                 with st.spinner("Classifying and explaining risk profile..."):
-                    pred_res = requests.post(pred_url, json=payload).json()
+                    pred_res = model_service.predict_record(form_inputs)
                     
                 # Layout results
                 col_res_left, col_res_right = st.columns([1, 1.2])
@@ -606,49 +620,55 @@ with tabs[2]:
                         uploaded_file.seek(0)
                         files = {"file": (uploaded_file.name, uploaded_file.read(), "text/csv")}
                         
-                        pred_url = f"{api_base_url}/batch-predict"
-                        response = requests.post(pred_url, files=files)
+                        predictions = []
+                        confidences = []
+                        for _, row in df_input.iterrows():
+                            record = row.to_dict()
+                            try:
+                                pred_res = model_service.predict_record(record)
+                                predictions.append(pred_res["prediction"])
+                                confidences.append(pred_res["confidence"])
+                            except Exception:
+                                predictions.append("Error")
+                                confidences.append(0.0)
                         
-                        if response.status_code == 200:
-                            # Read scored results
-                            from io import StringIO
-                            scored_csv = response.content.decode("utf-8")
-                            df_scored = pd.read_csv(StringIO(scored_csv))
-                            
-                            st.success("Successfully scored all batch rows!")
-                            
-                            # Render stats
-                            total_rows = len(df_scored)
-                            counts = df_scored["predicted_defect_risk"].value_counts()
-                            
-                            c1, c2, c3 = st.columns(3)
-                            with c1:
-                                low_cnt = counts.get("Low", 0)
-                                st.metric("Low Risk Lots", f"{low_cnt} / {total_rows}", f"{low_cnt/total_rows*100:.1f}%")
-                            with c2:
-                                med_cnt = counts.get("Medium", 0)
-                                st.metric("Medium Risk Lots", f"{med_cnt} / {total_rows}", f"{med_cnt/total_rows*100:.1f}%")
-                            with c3:
-                                high_cnt = counts.get("High", 0)
-                                st.metric("High Risk Lots", f"{high_cnt} / {total_rows}", f"{high_cnt/total_rows*100:.1f}%")
+                        df_scored = df_input.copy()
+                        df_scored["predicted_defect_risk"] = predictions
+                        df_scored["prediction_confidence"] = confidences
 
-                            # Scored Dataframe Preview
-                            st.markdown("#### Scored Dataset Preview")
-                            st.dataframe(df_scored.head(10))
-                            
-                            # Download button
-                            st.download_button(
-                                label="📥 Download Scored Batch CSV",
-                                data=scored_csv,
-                                file_name="scored_defect_risk_results.csv",
-                                mime="text/csv"
-                            )
-                        else:
-                            st.error(f"Scoring endpoint failed with status: {response.status_code}")
+                        st.success("Successfully scored all batch rows!")
+                        
+                        # Render stats
+                        total_rows = len(df_scored)
+                        counts = df_scored["predicted_defect_risk"].value_counts()
+                        
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            low_cnt = counts.get("Low", 0)
+                            st.metric("Low Risk Lots", f"{low_cnt} / {total_rows}", f"{low_cnt/total_rows*100:.1f}%")
+                        with c2:
+                            med_cnt = counts.get("Medium", 0)
+                            st.metric("Medium Risk Lots", f"{med_cnt} / {total_rows}", f"{med_cnt/total_rows*100:.1f}%")
+                        with c3:
+                            high_cnt = counts.get("High", 0)
+                            st.metric("High Risk Lots", f"{high_cnt} / {total_rows}", f"{high_cnt/total_rows*100:.1f}%")
+
+                        # Scored Dataframe Preview
+                        st.markdown("#### Scored Dataset Preview")
+                        st.dataframe(df_scored.head(10))
+                        
+                        # Download button
+                        scored_csv = df_scored.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Download Scored Batch CSV",
+                            data=scored_csv,
+                            file_name="scored_defect_risk_results.csv",
+                            mime="text/csv"
+                        )
                     except Exception as e:
-                        st.error(f"Failed to post batch data to backend: {e}")
+                        st.error(f"Failed to process batch data: {e}")
         else:
-            st.warning("Please start the FastAPI backend service to enable batch predictions.")
+            st.warning("Please train a model to enable batch predictions.")
 
 # ----------------- TAB 4: TRAIN MODEL -----------------
 with tabs[3]:
@@ -707,19 +727,10 @@ with tabs[3]:
         if connection_ok:
             with st.spinner("Retraining classifier pipeline. Preprocessing data, splitting classes, and saving artifacts..."):
                 try:
-                    train_url = f"{api_base_url}/train"
-                    
                     if custom_train_file is not None:
-                        # Upload custom file with seek(0) to prevent empty reads on retry
                         custom_train_file.seek(0)
-                        files = {"file": (custom_train_file.name, custom_train_file.read(), "text/csv")}
-                        payload = {"target_col": target_column_name}
-                        response = requests.post(train_url, files=files, data=payload)
+                        df = pd.read_csv(custom_train_file)
                     else:
-                        # Train from workspace file
-                        payload = {"target_col": target_column_name}
-                        
-                        # If a specific local workspace path is selected, upload it
                         local_path = None
                         if "cleaned_manufacturing_defects_dataset.csv" in dataset_option:
                             local_path = "cleaned_manufacturing_defects_dataset.csv"
@@ -727,24 +738,24 @@ with tabs[3]:
                             local_path = "clean_ai4i2020.csv"
                         
                         if local_path and os.path.exists(local_path):
-                            with open(local_path, "rb") as f:
-                                files = {"file": (local_path, f.read(), "text/csv")}
-                                response = requests.post(train_url, files=files, data=payload)
+                            df = pd.read_csv(local_path)
                         else:
-                            # Train from default
-                            response = requests.post(train_url, data=payload)
+                            df = pd.read_csv(SAMPLE_DATA_PATH)
                     
-                    if response.status_code == 200:
-                        train_res = response.json()
-                        st.session_state.train_success = "★ Model retraining successful and serialized successfully! ★"
-                        st.session_state.train_res = train_res
-                        st.rerun()  # Refresh screen to update metrics
-                    else:
-                        st.error(f"Training failed with backend code {response.status_code}: {response.text}")
+                    metadata = model_service.train_pipeline(df, target_column_name)
+                    
+                    st.session_state.train_success = "★ Model retraining successful and serialized successfully! ★"
+                    st.session_state.train_res = {
+                        "status": "success",
+                        "message": "Model trained and serialized successfully.",
+                        "metrics": metadata.get("metrics"),
+                        "trained_at": metadata.get("trained_at")
+                    }
+                    st.rerun()  # Refresh screen to update metrics
                 except Exception as e:
-                    st.error(f"Failed to communicate training request to backend: {e}")
+                    st.error(f"Training failed: {e}")
         else:
-            st.warning("Backend is offline. Ensure FastAPI is running locally.")
+            st.warning("Model service configuration error.")
 
 # ----------------- TAB 5: MODEL INSIGHTS -----------------
 with tabs[4]:
@@ -758,7 +769,7 @@ with tabs[4]:
     
     if connection_ok and model_loaded:
         try:
-            metadata = requests.get(f"{api_base_url}/metadata").json()
+            metadata = model_service.get_metadata()
             metrics = metadata.get("metrics", {})
             trained_at = metadata.get("trained_at", "N/A")
             classes = metadata.get("classes", [])
@@ -834,4 +845,4 @@ with tabs[4]:
         except Exception as e:
             st.error(f"Failed to fetch model metrics: {e}")
     else:
-        st.info("Offline: Ensure the FastAPI backend is running to load insights.")
+        st.info("Model missing: Train a model to load insights.")
